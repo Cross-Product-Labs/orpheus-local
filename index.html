@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Audio Streaming Demo</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      text-align: center;
+    }
+
+    .container {
+      margin-top: 50px;
+    }
+
+    textarea {
+      width: 100%;
+      height: 100px;
+      margin: 20px 0;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      resize: vertical;
+    }
+
+    button {
+      background-color: #4CAF50;
+      border: none;
+      color: white;
+      padding: 15px 32px;
+      text-align: center;
+      text-decoration: none;
+      display: inline-block;
+      font-size: 16px;
+      margin: 4px 2px;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+
+    .status {
+      margin-top: 20px;
+      color: #666;
+    }
+
+    .error {
+      color: #ff0000;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h1>Audio Streaming Demo</h1>
+    <textarea id="textInput"
+      placeholder="Enter text to convert to speech...">Hello, this is a test of the Orpheus text to speech model.</textarea>
+    <button id="playButton" onclick="handlePlay()">Generate and Play Audio</button>
+    <div id="status" class="status"></div>
+    <div id="error" class="error"></div>
+  </div>
+
+  <script>
+    const playButton = document.getElementById('playButton');
+    const statusDiv = document.getElementById('status');
+    const errorDiv = document.getElementById('error');
+    const textInput = document.getElementById('textInput');
+
+    async function handlePlay() {
+      try {
+        // Disable button and show loading status
+        playButton.disabled = true;
+        statusDiv.textContent = 'Generating audio...';
+        errorDiv.textContent = '';
+
+        // Get text from textarea
+        const text = textInput.value.trim();
+        if (!text) {
+          throw new Error('Please enter some text');
+        }
+
+        // Fetch the audio with the text parameter
+        const response = await fetch(`http://localhost:8000/stream-audio?text=${encodeURIComponent(text)}`);
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        // Convert the response to a blob
+        const audioBlob = await response.blob();
+        const audioUrl = URL.createObjectURL(audioBlob);
+
+        // Create and play audio
+        statusDiv.textContent = 'Playing audio...';
+        const audio = new Audio(audioUrl);
+
+        audio.onended = () => {
+          statusDiv.textContent = 'Playback finished';
+          playButton.disabled = false;
+          // Clean up the blob URL
+          URL.revokeObjectURL(audioUrl);
+        };
+
+        audio.onerror = (e) => {
+          errorDiv.textContent = 'Error playing audio';
+          playButton.disabled = false;
+          URL.revokeObjectURL(audioUrl);
+        };
+
+        await audio.play();
+
+      } catch (error) {
+        errorDiv.textContent = `Error: ${error.message}`;
+        statusDiv.textContent = '';
+        playButton.disabled = false;
+        console.error('Error:', error);
+      }
+    }
+  </script>
+</body>
+
+</html>
