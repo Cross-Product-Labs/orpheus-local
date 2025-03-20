@@ -75,48 +75,86 @@
     const errorDiv = document.getElementById('error');
     const textInput = document.getElementById('textInput');
 
+    let audioContext;
+    let audioWorklet;
+
+    async function initAudio() {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      await audioContext.resume();
+    }
+
     async function handlePlay() {
       try {
-        // Disable button and show loading status
         playButton.disabled = true;
         statusDiv.textContent = 'Generating audio...';
         errorDiv.textContent = '';
 
-        // Get text from textarea
         const text = textInput.value.trim();
         if (!text) {
           throw new Error('Please enter some text');
         }
 
-        // Fetch the audio with the text parameter
-        const response = await fetch(`http://localhost:8000/stream-audio?text=${encodeURIComponent(text)}`);
-
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+        if (!audioContext) {
+          await initAudio();
         }
 
-        // Convert the response to a blob
-        const audioBlob = await response.blob();
-        const audioUrl = URL.createObjectURL(audioBlob);
+        // Create audio buffer source
+        const eventSource = new EventSource(`http://localhost:8000/stream-audio?text=${encodeURIComponent(text)}`);
 
-        // Create and play audio
-        statusDiv.textContent = 'Playing audio...';
-        const audio = new Audio(audioUrl);
+        let format;
+        let audioQueue = [];
+        let isPlaying = false;
 
-        audio.onended = () => {
-          statusDiv.textContent = 'Playback finished';
+        eventSource.addEventListener('format', (e) => {
+          format = JSON.parse(e.data);
+        });
+
+        eventSource.addEventListener('audio', async (e) => {
+          // Convert hex string back to audio data
+          const chunk = new Uint8Array(e.data.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+
+          // Create audio buffer
+          const audioBuffer = audioContext.createBuffer(1, chunk.length / 2, format.sampleRate);
+          const channelData = audioBuffer.getChannelData(0);
+
+          // Convert 16-bit PCM to float32
+          const view = new Int16Array(chunk.buffer);
+          for (let i = 0; i < view.length; i++) {
+            channelData[i] = view[i] / 32768.0;
+          }
+
+          audioQueue.push(audioBuffer);
+
+          if (!isPlaying) {
+            isPlaying = true;
+            playNextBuffer();
+          }
+        });
+
+        async function playNextBuffer() {
+          if (audioQueue.length === 0) {
+            isPlaying = false;
+            return;
+          }
+
+          const buffer = audioQueue.shift();
+          const source = audioContext.createBufferSource();
+          source.buffer = buffer;
+          source.connect(audioContext.destination);
+          source.onended = playNextBuffer;
+          source.start();
+          statusDiv.textContent = 'Playing audio...';
+        }
+
+        eventSource.onerror = () => {
+          eventSource.close();
           playButton.disabled = false;
-          // Clean up the blob URL
-          URL.revokeObjectURL(audioUrl);
+          if (isPlaying) {
+            statusDiv.textContent = 'Playback finished';
+          } else {
+            errorDiv.textContent = 'Error streaming audio';
+          }
         };
-
-        audio.onerror = (e) => {
-          errorDiv.textContent = 'Error playing audio';
-          playButton.disabled = false;
-          URL.revokeObjectURL(audioUrl);
-        };
-
-        await audio.play();
 
       } catch (error) {
         errorDiv.textContent = `Error: ${error.message}`;
