@@ -4,6 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="darkreader-lock">
   <title>Audio Streaming Demo</title>
   <style>
     body {
@@ -12,6 +13,8 @@
       margin: 0 auto;
       padding: 20px;
       text-align: center;
+      background-color: #121212;
+      color: #e0e0e0;
     }
 
     .container {
@@ -23,9 +26,11 @@
       height: 100px;
       margin: 20px 0;
       padding: 10px;
-      border: 1px solid #ccc;
+      border: 1px solid #444;
       border-radius: 4px;
       resize: vertical;
+      background-color: #1e1e1e;
+      color: #e0e0e0;
     }
 
     button {
@@ -43,18 +48,98 @@
     }
 
     button:disabled {
-      background-color: #cccccc;
+      background-color: #2c5e2e;
       cursor: not-allowed;
     }
 
     .status {
       margin-top: 20px;
-      color: #666;
+      color: #b0b0b0;
     }
 
     .error {
-      color: #ff0000;
+      color: #ff6b6b;
       margin-top: 20px;
+    }
+
+    .settings {
+      margin: 20px 0;
+      padding: 15px;
+      background-color: #1e1e1e;
+      border-radius: 4px;
+      text-align: left;
+    }
+
+    .settings-row {
+      display: flex;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .settings-row label {
+      flex: 0 0 150px;
+    }
+
+    .settings-row input[type="number"] {
+      width: 80px;
+      padding: 5px;
+      margin-right: 10px;
+      background-color: #2a2a2a;
+      color: #e0e0e0;
+      border: 1px solid #444;
+    }
+
+    .settings-row input[type="range"] {
+      flex: 1;
+      margin: 0 10px;
+      background-color: #2a2a2a;
+    }
+
+    .settings-row button {
+      padding: 5px 10px;
+      font-size: 14px;
+    }
+
+    .buffer-info {
+      font-size: 14px;
+      color: #b0b0b0;
+      margin-left: 10px;
+    }
+
+    .audio-container {
+      margin-top: 20px;
+      padding: 15px;
+      background-color: #1e1e1e;
+      border-radius: 4px;
+      display: none;
+    }
+
+    .audio-info {
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+
+    .audio-controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .audio-controls button {
+      margin: 0 5px;
+    }
+
+    audio {
+      width: 100%;
+      max-width: 500px;
+      background-color: #2a2a2a;
+      border-radius: 4px;
+    }
+
+    h1 {
+      color: #4CAF50;
     }
   </style>
 </head>
@@ -62,97 +147,341 @@
 <body>
   <div class="container">
     <h1>Audio Streaming Demo</h1>
+
+    <div class="settings">
+      <div class="settings-row">
+        <label for="bufferSizeInput">Buffer Size (KB):</label>
+        <input type="number" id="bufferSizeInput" min="1" max="128" value="16" onchange="updateBufferSize(this.value)">
+        <input type="range" id="bufferSizeSlider" min="1" max="128" value="16"
+          onchange="document.getElementById('bufferSizeInput').value = this.value; updateBufferSize(this.value)">
+        <button onclick="resetBufferSize()">Reset</button>
+        <span id="bufferInfo" class="buffer-info">(16 KB = 16384 bytes)</span>
+      </div>
+    </div>
+
     <textarea id="textInput"
       placeholder="Enter text to convert to speech...">Hello, this is a test of the Orpheus text to speech model.</textarea>
     <button id="playButton" onclick="handlePlay()">Generate and Play Audio</button>
     <div id="status" class="status"></div>
+    <div id="timingInfo" class="status"></div>
     <div id="error" class="error"></div>
+
+    <div id="audioContainer" class="audio-container">
+      <div id="audioInfo" class="audio-info"></div>
+      <div class="audio-controls">
+        <audio id="audioPlayer" controls></audio>
+        <button id="downloadButton" onclick="downloadAudio()">Download Audio</button>
+      </div>
+    </div>
   </div>
 
   <script>
+    // AudioWorklet PCM Player implementation
+    class AudioWorkletPCMPlayer {
+      constructor(options = {}) {
+        // Default options – ensure the sampleRate matches your PCM data
+        this.options = Object.assign(
+          {
+            sampleRate: 24000,
+            channels: 1,
+          },
+          options
+        );
+        this.audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+          sampleRate: this.options.sampleRate,
+        });
+        this.gainNode = this.audioCtx.createGain();
+        this.gainNode.gain.value = 1;
+        this.gainNode.connect(this.audioCtx.destination);
+        this.initialized = false;
+        this._initWorklet();
+      }
+
+      async _initWorklet() {
+        // Inline AudioWorklet processor code
+        const processorCode = `
+          class PCMPlayerProcessor extends AudioWorkletProcessor {
+            constructor() {
+              super();
+              // Internal buffer to hold incoming samples
+              this.buffer = [];
+              // Listen for incoming PCM data messages
+              this.port.onmessage = (event) => {
+                if (event.data && event.data.samples) {
+                  // Append samples (assumed to be an array of float values in [-1,1])
+                  this.buffer.push(...event.data.samples);
+                }
+              };
+            }
+            process(inputs, outputs, parameters) {
+              const output = outputs[0];
+              // Process the first channel (assuming mono playback)
+              const channel = output[0];
+              const blockSize = channel.length;
+              // Fill the output with samples from our buffer; pad with zeros if needed
+              for (let i = 0; i < blockSize; i++) {
+                channel[i] = this.buffer.length ? this.buffer.shift() : 0;
+              }
+              return true;
+            }
+          }
+          registerProcessor('pcm-player-processor', PCMPlayerProcessor);
+        `;
+        const blob = new Blob([processorCode], { type: "application/javascript" });
+        const url = URL.createObjectURL(blob);
+        await this.audioCtx.audioWorklet.addModule(url);
+        this.node = new AudioWorkletNode(this.audioCtx, "pcm-player-processor");
+        this.node.connect(this.gainNode);
+        this.initialized = true;
+      }
+
+      /**
+       * Feed PCM data into the player.
+       * Supports Int16Array, Uint8Array, Float32Array, Array, ArrayBuffer, and Buffer.
+       */
+      feed(data) {
+        let floatData;
+        if (data instanceof Int16Array) {
+          // Convert 16-bit PCM to Float32 values in [-1,1]
+          floatData = new Float32Array(data.length);
+          for (let i = 0; i < data.length; i++) {
+            floatData[i] = data[i] / 32768;
+          }
+        } else if (data instanceof Uint8Array) {
+          // Convert Uint8Array (raw bytes) to Int16Array, then to Float32Array
+          if (data.byteLength % 2 !== 0) {
+            console.warn("Uint8Array length not even. Cannot interpret as 16-bit PCM.");
+            return;
+          }
+          const int16Data = new Int16Array(data.buffer, data.byteOffset, data.byteLength / 2);
+          floatData = new Float32Array(int16Data.length);
+          for (let i = 0; i < int16Data.length; i++) {
+            floatData[i] = int16Data[i] / 32768;
+          }
+        } else if (data instanceof Float32Array) {
+          floatData = data;
+        } else if (Array.isArray(data)) {
+          floatData = new Float32Array(data);
+        } else if (data instanceof ArrayBuffer) {
+          const int16Data = new Int16Array(data);
+          floatData = new Float32Array(int16Data.length);
+          for (let i = 0; i < int16Data.length; i++) {
+            floatData[i] = int16Data[i] / 32768;
+          }
+        } else if (typeof Buffer !== 'undefined' && data instanceof Buffer) {
+          const int16Data = new Int16Array(data.buffer, data.byteOffset, data.byteLength / 2);
+          floatData = new Float32Array(int16Data.length);
+          for (let i = 0; i < int16Data.length; i++) {
+            floatData[i] = int16Data[i] / 32768;
+          }
+        } else {
+          console.warn("Unsupported data type passed to feed().");
+          return;
+        }
+        if (this.initialized) {
+          // Post the float samples to the worklet; using Array.from for structured cloning
+          this.node.port.postMessage({ samples: Array.from(floatData) });
+        } else {
+          console.warn("AudioWorklet not yet initialized.");
+        }
+      }
+
+      /**
+       * Set playback volume.
+       * @param {number} value - Volume value (0.0 to 1.0)
+       */
+      volume(value) {
+        if (this.gainNode) {
+          this.gainNode.gain.value = value;
+        }
+      }
+
+      /**
+       * Clean up and shut down the player.
+       */
+      destroy() {
+        if (this.node) {
+          this.node.disconnect();
+        }
+        if (this.gainNode) {
+          this.gainNode.disconnect();
+        }
+        if (this.audioCtx && this.audioCtx.close) {
+          this.audioCtx.close();
+        }
+      }
+    }
+
+    // Setup function for the player
+    function setupPlayer() {
+      return new AudioWorkletPCMPlayer({ sampleRate: 24000 });
+    }
+
     const playButton = document.getElementById('playButton');
     const statusDiv = document.getElementById('status');
+    const timingInfoDiv = document.getElementById('timingInfo');
     const errorDiv = document.getElementById('error');
     const textInput = document.getElementById('textInput');
+    const bufferSizeInput = document.getElementById('bufferSizeInput');
+    const bufferSizeSlider = document.getElementById('bufferSizeSlider');
+    const bufferInfoSpan = document.getElementById('bufferInfo');
+    const audioContainer = document.getElementById('audioContainer');
+    const audioInfo = document.getElementById('audioInfo');
+    const audioPlayer = document.getElementById('audioPlayer');
+    const downloadButton = document.getElementById('downloadButton');
 
-    let audioContext;
-    let audioWorklet;
+    let player = null;
+    let isSpeaking = false;
+    let audioChunks = []; // Store all audio chunks
+    let audioDuration = 0; // Track audio duration
 
-    async function initAudio() {
-      audioContext = new (window.AudioContext || window.webkitAudioContext)();
-      await audioContext.resume();
+    // Default buffer size in KB
+    const DEFAULT_BUFFER_SIZE_KB = 16;
+    // Calculate buffer size in bytes (KB * 1024)
+    let bufferSizeKB = DEFAULT_BUFFER_SIZE_KB;
+    let MIN_BUFFER_BYTES = bufferSizeKB * 1024;
+
+    // Function to update buffer size
+    function updateBufferSize(sizeKB) {
+      bufferSizeKB = parseInt(sizeKB) || DEFAULT_BUFFER_SIZE_KB;
+      MIN_BUFFER_BYTES = bufferSizeKB * 1024;
+      bufferInfoSpan.textContent = `(${bufferSizeKB} KB = ${MIN_BUFFER_BYTES} bytes)`;
+
+      // Sync slider and input if they don't match
+      bufferSizeInput.value = bufferSizeKB;
+      bufferSizeSlider.value = bufferSizeKB;
     }
+
+    // Function to reset buffer size to default
+    function resetBufferSize() {
+      updateBufferSize(DEFAULT_BUFFER_SIZE_KB);
+    }
+
+    // Initialize with default value
+    updateBufferSize(DEFAULT_BUFFER_SIZE_KB);
+
+    // Initialize audio on first user interaction
+    document.body.addEventListener('click', function () {
+      if (!player) {
+        player = setupPlayer();
+      }
+    }, { once: true });
 
     async function handlePlay() {
       try {
         playButton.disabled = true;
         statusDiv.textContent = 'Generating audio...';
+        timingInfoDiv.textContent = '';
         errorDiv.textContent = '';
+        audioContainer.style.display = 'none';
+
+        // Reset audio data
+        audioChunks = [];
+        audioDuration = 0;
 
         const text = textInput.value.trim();
         if (!text) {
           throw new Error('Please enter some text');
         }
 
-        if (!audioContext) {
-          await initAudio();
+        // Initialize player if not already done
+        if (!player) {
+          player = setupPlayer();
         }
 
-        // Create audio buffer source
+        // Record start time when button is clicked
+        const startTime = performance.now();
+
+        // Create event source for streaming
         const eventSource = new EventSource(`http://localhost:8000/stream-audio?text=${encodeURIComponent(text)}`);
 
-        let format;
-        let audioQueue = [];
-        let isPlaying = false;
+        // Buffer settings
+        const initialBuffer = [];
+        let isBuffering = true;
+        let totalBufferedBytes = 0;
+        isSpeaking = true;
+        let firstChunkReceived = false;
+        let startPlayTime = 0;
 
         eventSource.addEventListener('format', (e) => {
-          format = JSON.parse(e.data);
+          const format = JSON.parse(e.data);
+          console.log('Audio format:', format);
         });
 
         eventSource.addEventListener('audio', async (e) => {
+          // Calculate latency on first chunk
+          if (!firstChunkReceived) {
+            const latency = (performance.now() - startTime).toFixed(0);
+            console.log(`First audio chunk received after ${latency}ms`);
+            statusDiv.textContent = `First chunk received after ${latency}ms`;
+            firstChunkReceived = true;
+          }
+
           // Convert hex string back to audio data
           const chunk = new Uint8Array(e.data.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
 
-          // Create audio buffer
-          const audioBuffer = audioContext.createBuffer(1, chunk.length / 2, format.sampleRate);
-          const channelData = audioBuffer.getChannelData(0);
+          // Store all chunks for replay
+          audioChunks.push(chunk);
 
-          // Convert 16-bit PCM to float32
-          const view = new Int16Array(chunk.buffer);
-          for (let i = 0; i < view.length; i++) {
-            channelData[i] = view[i] / 32768.0;
-          }
+          // Calculate approximate duration (assuming 24kHz, 16-bit mono)
+          // Each sample is 2 bytes, so bytes/2 gives us sample count
+          // Then divide by sample rate to get seconds
+          audioDuration += chunk.length / 2 / 24000;
 
-          audioQueue.push(audioBuffer);
+          // Buffer initial chunks
+          if (isBuffering) {
+            initialBuffer.push(chunk);
+            totalBufferedBytes += chunk.length;
+            statusDiv.textContent = `Buffering audio... (${Math.round(totalBufferedBytes / 1024)} KB)`;
 
-          if (!isPlaying) {
-            isPlaying = true;
-            playNextBuffer();
-          }
-        });
+            // Start playback when we have enough data
+            if (totalBufferedBytes >= MIN_BUFFER_BYTES) {
+              isBuffering = false;
+              startPlayTime = performance.now();
+              const totalLatency = (startPlayTime - startTime).toFixed(0);
+              statusDiv.textContent = 'Playing audio...';
+              timingInfoDiv.textContent = `First chunk: ${(firstChunkReceived ? performance.now() - startTime : 'N/A').toFixed(0)}ms, Playback start: ${totalLatency}ms`;
 
-        async function playNextBuffer() {
-          if (audioQueue.length === 0) {
-            isPlaying = false;
+              // Feed the initial buffer to the player
+              for (const bufferedChunk of initialBuffer) {
+                if (player) {
+                  player.feed(bufferedChunk);
+                }
+              }
+            }
             return;
           }
 
-          const buffer = audioQueue.shift();
-          const source = audioContext.createBufferSource();
-          source.buffer = buffer;
-          source.connect(audioContext.destination);
-          source.onended = playNextBuffer;
-          source.start();
-          statusDiv.textContent = 'Playing audio...';
-        }
+          // Feed PCM data to player after buffering phase
+          if (player) {
+            player.feed(chunk);
+          }
+        });
 
         eventSource.onerror = () => {
           eventSource.close();
           playButton.disabled = false;
-          if (isPlaying) {
-            statusDiv.textContent = 'Playback finished';
-          } else {
+          isSpeaking = false;
+
+          if (isBuffering) {
             errorDiv.textContent = 'Error streaming audio';
+            statusDiv.textContent = '';
+          } else {
+            const playbackTime = ((performance.now() - startPlayTime) / 1000).toFixed(2);
+            statusDiv.textContent = 'Playback finished';
+
+            // Show audio info and controls
+            audioInfo.textContent = `Audio duration: ${audioDuration.toFixed(2)}s, Playback time: ${playbackTime}s`;
+
+            // Create WAV file from the audio chunks
+            createAndSetAudioElement();
+
+            audioContainer.style.display = 'block';
+
+            // Don't clear timing info
+            setTimeout(() => {
+              statusDiv.textContent = '';
+            }, 3000);
           }
         };
 
@@ -161,6 +490,117 @@
         statusDiv.textContent = '';
         playButton.disabled = false;
         console.error('Error:', error);
+      }
+    }
+
+    // Function to create WAV and set it to the audio element
+    function createAndSetAudioElement() {
+      if (audioChunks.length === 0) {
+        return;
+      }
+
+      // Combine all chunks into one array
+      let totalLength = 0;
+      audioChunks.forEach(chunk => {
+        totalLength += chunk.length;
+      });
+
+      const combinedChunks = new Uint8Array(totalLength);
+      let offset = 0;
+
+      audioChunks.forEach(chunk => {
+        combinedChunks.set(chunk, offset);
+        offset += chunk.length;
+      });
+
+      // Convert to 16-bit PCM
+      const pcmData = new Int16Array(combinedChunks.buffer, combinedChunks.byteOffset, combinedChunks.byteLength / 2);
+
+      // Create WAV file
+      const wavFile = createWavFile(pcmData, 24000);
+
+      // Create blob and set as audio source
+      const blob = new Blob([wavFile], { type: 'audio/wav' });
+      const url = URL.createObjectURL(blob);
+
+      // Set the audio element source
+      audioPlayer.src = url;
+
+      // Clean up the URL when the page is unloaded
+      window.addEventListener('unload', () => {
+        URL.revokeObjectURL(url);
+      });
+    }
+
+    // Function to download the audio as a WAV file
+    function downloadAudio() {
+      if (audioChunks.length === 0) {
+        errorDiv.textContent = 'No audio available to download';
+        return;
+      }
+
+      // Use the current audio element's source if available
+      if (audioPlayer.src) {
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = audioPlayer.src;
+        a.download = 'tts-audio.wav';
+        document.body.appendChild(a);
+        a.click();
+
+        // Clean up
+        setTimeout(() => {
+          document.body.removeChild(a);
+        }, 100);
+      } else {
+        errorDiv.textContent = 'Audio source not available';
+      }
+    }
+
+    // Function to create a WAV file from PCM data
+    function createWavFile(pcmData, sampleRate) {
+      const numChannels = 1;
+      const bitsPerSample = 16;
+      const bytesPerSample = bitsPerSample / 8;
+      const blockAlign = numChannels * bytesPerSample;
+      const byteRate = sampleRate * blockAlign;
+      const dataSize = pcmData.length * bytesPerSample;
+      const buffer = new ArrayBuffer(44 + dataSize);
+      const view = new DataView(buffer);
+
+      // WAV header
+      // "RIFF" chunk descriptor
+      writeString(view, 0, 'RIFF');
+      view.setUint32(4, 36 + dataSize, true);
+      writeString(view, 8, 'WAVE');
+
+      // "fmt " sub-chunk
+      writeString(view, 12, 'fmt ');
+      view.setUint32(16, 16, true); // fmt chunk size
+      view.setUint16(20, 1, true); // audio format (1 = PCM)
+      view.setUint16(22, numChannels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, byteRate, true);
+      view.setUint16(32, blockAlign, true);
+      view.setUint16(34, bitsPerSample, true);
+
+      // "data" sub-chunk
+      writeString(view, 36, 'data');
+      view.setUint32(40, dataSize, true);
+
+      // Write PCM data
+      const offset = 44;
+      for (let i = 0; i < pcmData.length; i++) {
+        view.setInt16(offset + i * bytesPerSample, pcmData[i], true);
+      }
+
+      return buffer;
+    }
+
+    // Helper function to write a string to a DataView
+    function writeString(view, offset, string) {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
       }
     }
   </script>
