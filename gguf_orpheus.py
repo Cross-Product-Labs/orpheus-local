@@ -10,9 +10,6 @@ import argparse
 import threading
 import queue
 import asyncio
-import torch
-import io
-from pydub import AudioSegment
 
 # LM Studio API settings
 API_URL = "http://127.0.0.1:1234/v1/completions"
