@@ -157,6 +157,17 @@
         <button onclick="resetBufferSize()">Reset</button>
         <span id="bufferInfo" class="buffer-info">(16 KB = 16384 bytes)</span>
       </div>
+
+      <div class="settings-row">
+        <label for="noiseGateCheckbox">Noise Gate:</label>
+        <input type="checkbox" id="noiseGateCheckbox" checked onchange="updateNoiseGate()">
+        <label for="noiseGateThreshold" style="flex: 0 0 80px; margin-left: 10px;">Threshold:</label>
+        <input type="number" id="noiseGateThreshold" min="0" max="0.1" step="0.001" value="0.001"
+          onchange="updateNoiseGate()">
+        <input type="range" id="noiseGateSlider" min="0" max="0.1" step="0.001" value="0.001"
+          onchange="document.getElementById('noiseGateThreshold').value = this.value; updateNoiseGate()">
+        <button onclick="resetNoiseGate()">Reset</button>
+      </div>
     </div>
 
     <textarea id="textInput"
@@ -184,6 +195,8 @@
           {
             sampleRate: 24000,
             channels: 1,
+            noiseGateThreshold: 0.001,
+            noiseGateEnabled: true
           },
           options
         );
@@ -205,11 +218,18 @@
               super();
               // Internal buffer to hold incoming samples
               this.buffer = [];
+              // Noise gate parameters
+              this.noiseGateThreshold = 0.001; // Default threshold (adjustable)
+              this.noiseGateEnabled = true;   // Enable by default
               // Listen for incoming PCM data messages
               this.port.onmessage = (event) => {
                 if (event.data && event.data.samples) {
                   // Append samples (assumed to be an array of float values in [-1,1])
                   this.buffer.push(...event.data.samples);
+                } else if (event.data && event.data.command === 'setNoiseGate') {
+                  // Update noise gate settings
+                  this.noiseGateThreshold = event.data.threshold;
+                  this.noiseGateEnabled = event.data.enabled;
                 }
               };
             }
@@ -220,7 +240,14 @@
               const blockSize = channel.length;
               // Fill the output with samples from our buffer; pad with zeros if needed
               for (let i = 0; i < blockSize; i++) {
-                channel[i] = this.buffer.length ? this.buffer.shift() : 0;
+                let sample = this.buffer.length ? this.buffer.shift() : 0;
+
+                // Apply noise gate if enabled
+                if (this.noiseGateEnabled && Math.abs(sample) < this.noiseGateThreshold) {
+                  sample = 0;
+                }
+
+                channel[i] = sample;
               }
               return true;
             }
@@ -297,6 +324,21 @@
       }
 
       /**
+       * Set noise gate threshold.
+       * @param {number} threshold - Threshold value (0.0 to 1.0)
+       * @param {boolean} enabled - Whether the noise gate is enabled
+       */
+      setNoiseGate(threshold, enabled) {
+        if (this.initialized && this.node) {
+          this.node.port.postMessage({
+            command: 'setNoiseGate',
+            threshold: threshold,
+            enabled: enabled
+          });
+        }
+      }
+
+      /**
        * Clean up and shut down the player.
        */
       destroy() {
@@ -314,7 +356,11 @@
 
     // Setup function for the player
     function setupPlayer() {
-      return new AudioWorkletPCMPlayer({ sampleRate: 24000 });
+      return new AudioWorkletPCMPlayer({
+        sampleRate: 24000,
+        noiseGateThreshold: noiseGateThreshold,
+        noiseGateEnabled: noiseGateEnabled
+      });
     }
 
     const playButton = document.getElementById('playButton');
@@ -341,6 +387,13 @@
     let bufferSizeKB = DEFAULT_BUFFER_SIZE_KB;
     let MIN_BUFFER_BYTES = bufferSizeKB * 1024;
 
+    // Default noise gate settings
+    const DEFAULT_NOISE_GATE_THRESHOLD = 0.001;
+    const DEFAULT_NOISE_GATE_ENABLED = true;
+
+    let noiseGateThreshold = DEFAULT_NOISE_GATE_THRESHOLD;
+    let noiseGateEnabled = DEFAULT_NOISE_GATE_ENABLED;
+
     // Function to update buffer size
     function updateBufferSize(sizeKB) {
       bufferSizeKB = parseInt(sizeKB) || DEFAULT_BUFFER_SIZE_KB;
@@ -359,6 +412,46 @@
 
     // Initialize with default value
     updateBufferSize(DEFAULT_BUFFER_SIZE_KB);
+
+    // Function to update noise gate settings
+    function updateNoiseGate() {
+      const thresholdInput = document.getElementById('noiseGateThreshold');
+      const thresholdSlider = document.getElementById('noiseGateSlider');
+      const enabledCheckbox = document.getElementById('noiseGateCheckbox');
+
+      noiseGateThreshold = parseFloat(thresholdInput.value) || DEFAULT_NOISE_GATE_THRESHOLD;
+      noiseGateEnabled = enabledCheckbox.checked;
+
+      // Sync slider and input if they don't match
+      thresholdInput.value = noiseGateThreshold;
+      thresholdSlider.value = noiseGateThreshold;
+
+      // Update player if it exists
+      if (player) {
+        player.setNoiseGate(noiseGateThreshold, noiseGateEnabled);
+      }
+    }
+
+    // Function to reset noise gate to default
+    function resetNoiseGate() {
+      document.getElementById('noiseGateThreshold').value = DEFAULT_NOISE_GATE_THRESHOLD;
+      document.getElementById('noiseGateSlider').value = DEFAULT_NOISE_GATE_THRESHOLD;
+      document.getElementById('noiseGateCheckbox').checked = DEFAULT_NOISE_GATE_ENABLED;
+      updateNoiseGate();
+    }
+
+    // Initialize with default values
+    function initializeSettings() {
+      updateBufferSize(DEFAULT_BUFFER_SIZE_KB);
+
+      // Set initial noise gate values
+      document.getElementById('noiseGateThreshold').value = DEFAULT_NOISE_GATE_THRESHOLD;
+      document.getElementById('noiseGateSlider').value = DEFAULT_NOISE_GATE_THRESHOLD;
+      document.getElementById('noiseGateCheckbox').checked = DEFAULT_NOISE_GATE_ENABLED;
+    }
+
+    // Call initialization on page load
+    window.addEventListener('DOMContentLoaded', initializeSettings);
 
     // Initialize audio on first user interaction
     document.body.addEventListener('click', function () {
@@ -387,6 +480,9 @@
         // Initialize player if not already done
         if (!player) {
           player = setupPlayer();
+        } else {
+          // Update noise gate settings in case they've changed
+          player.setNoiseGate(noiseGateThreshold, noiseGateEnabled);
         }
 
         // Record start time when button is clicked
