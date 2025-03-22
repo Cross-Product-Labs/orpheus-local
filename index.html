@@ -151,22 +151,63 @@
     <div class="settings">
       <div class="settings-row">
         <label for="bufferSizeInput">Buffer Size (KB):</label>
-        <input type="number" id="bufferSizeInput" min="1" max="128" value="16" onchange="updateBufferSize(this.value)">
-        <input type="range" id="bufferSizeSlider" min="1" max="128" value="16"
+        <input type="number" id="bufferSizeInput" min="1" max="128" value="8" onchange="updateBufferSize(this.value)">
+        <input type="range" id="bufferSizeSlider" min="1" max="128" value="8"
           onchange="document.getElementById('bufferSizeInput').value = this.value; updateBufferSize(this.value)">
         <button onclick="resetBufferSize()">Reset</button>
-        <span id="bufferInfo" class="buffer-info">(16 KB = 16384 bytes)</span>
+        <span id="bufferInfo" class="buffer-info">(8 KB = 8192 bytes)</span>
+      </div>
+
+      <!-- Voice selection -->
+      <div class="settings-row">
+        <label for="voiceSelect">Voice:</label>
+        <select id="voiceSelect">
+          <option value="tara" selected>Tara (Default)</option>
+          <option value="leah">Leah</option>
+          <option value="jess">Jess</option>
+          <option value="leo">Leo</option>
+          <option value="dan">Dan</option>
+          <option value="mia">Mia</option>
+          <option value="zac">Zac</option>
+          <option value="zoe">Zoe</option>
+        </select>
+      </div>
+
+      <!-- Generation parameters -->
+      <div class="settings-row">
+        <label for="temperatureInput">Temperature:</label>
+        <input type="number" id="temperatureInput" min="0.1" max="1.5" step="0.05" value="0.6"
+          onchange="updateTemperature(this.value)">
+        <input type="range" id="temperatureSlider" min="0.1" max="1.5" step="0.05" value="0.6"
+          onchange="document.getElementById('temperatureInput').value = this.value; updateTemperature(this.value)">
+        <button onclick="resetTemperature()">Reset</button>
       </div>
 
       <div class="settings-row">
-        <label for="noiseGateCheckbox">Noise Gate:</label>
-        <input type="checkbox" id="noiseGateCheckbox" checked onchange="updateNoiseGate()">
-        <label for="noiseGateThreshold" style="flex: 0 0 80px; margin-left: 10px;">Threshold:</label>
-        <input type="number" id="noiseGateThreshold" min="0" max="0.1" step="0.001" value="0.001"
-          onchange="updateNoiseGate()">
-        <input type="range" id="noiseGateSlider" min="0" max="0.1" step="0.001" value="0.001"
-          onchange="document.getElementById('noiseGateThreshold').value = this.value; updateNoiseGate()">
-        <button onclick="resetNoiseGate()">Reset</button>
+        <label for="topPInput">Top P:</label>
+        <input type="number" id="topPInput" min="0.1" max="1.0" step="0.05" value="0.9"
+          onchange="updateTopP(this.value)">
+        <input type="range" id="topPSlider" min="0.1" max="1.0" step="0.05" value="0.9"
+          onchange="document.getElementById('topPInput').value = this.value; updateTopP(this.value)">
+        <button onclick="resetTopP()">Reset</button>
+      </div>
+
+      <div class="settings-row">
+        <label for="repPenaltyInput">Rep. Penalty:</label>
+        <input type="number" id="repPenaltyInput" min="1.0" max="2.0" step="0.05" value="1.1"
+          onchange="updateRepPenalty(this.value)">
+        <input type="range" id="repPenaltySlider" min="1.0" max="2.0" step="0.05" value="1.1"
+          onchange="document.getElementById('repPenaltyInput').value = this.value; updateRepPenalty(this.value)">
+        <button onclick="resetRepPenalty()">Reset</button>
+      </div>
+
+      <div class="settings-row">
+        <label for="maxTokensInput">Max Tokens:</label>
+        <input type="number" id="maxTokensInput" min="100" max="4096" step="100" value="1200"
+          onchange="updateMaxTokens(this.value)">
+        <input type="range" id="maxTokensSlider" min="100" max="4096" step="100" value="1200"
+          onchange="document.getElementById('maxTokensInput').value = this.value; updateMaxTokens(this.value)">
+        <button onclick="resetMaxTokens()">Reset</button>
       </div>
     </div>
 
@@ -382,7 +423,7 @@
     let audioDuration = 0; // Track audio duration
 
     // Default buffer size in KB
-    const DEFAULT_BUFFER_SIZE_KB = 16;
+    const DEFAULT_BUFFER_SIZE_KB = 8;
     // Calculate buffer size in bytes (KB * 1024)
     let bufferSizeKB = DEFAULT_BUFFER_SIZE_KB;
     let MIN_BUFFER_BYTES = bufferSizeKB * 1024;
@@ -393,6 +434,18 @@
 
     let noiseGateThreshold = DEFAULT_NOISE_GATE_THRESHOLD;
     let noiseGateEnabled = DEFAULT_NOISE_GATE_ENABLED;
+
+    // Default generation parameters
+    const DEFAULT_TEMPERATURE = 0.6;
+    const DEFAULT_TOP_P = 0.9;
+    const DEFAULT_REP_PENALTY = 1.1;
+    const DEFAULT_MAX_TOKENS = 4096;
+
+    // Current generation parameters
+    let temperature = DEFAULT_TEMPERATURE;
+    let topP = DEFAULT_TOP_P;
+    let repPenalty = DEFAULT_REP_PENALTY;
+    let maxTokens = DEFAULT_MAX_TOKENS;
 
     // Function to update buffer size
     function updateBufferSize(sizeKB) {
@@ -413,41 +466,71 @@
     // Initialize with default value
     updateBufferSize(DEFAULT_BUFFER_SIZE_KB);
 
-    // Function to update noise gate settings
-    function updateNoiseGate() {
-      const thresholdInput = document.getElementById('noiseGateThreshold');
-      const thresholdSlider = document.getElementById('noiseGateSlider');
-      const enabledCheckbox = document.getElementById('noiseGateCheckbox');
-
-      noiseGateThreshold = parseFloat(thresholdInput.value) || DEFAULT_NOISE_GATE_THRESHOLD;
-      noiseGateEnabled = enabledCheckbox.checked;
+    // Function to update temperature
+    function updateTemperature(value) {
+      temperature = parseFloat(value) || DEFAULT_TEMPERATURE;
 
       // Sync slider and input if they don't match
-      thresholdInput.value = noiseGateThreshold;
-      thresholdSlider.value = noiseGateThreshold;
-
-      // Update player if it exists
-      if (player) {
-        player.setNoiseGate(noiseGateThreshold, noiseGateEnabled);
-      }
+      document.getElementById('temperatureInput').value = temperature;
+      document.getElementById('temperatureSlider').value = temperature;
     }
 
-    // Function to reset noise gate to default
-    function resetNoiseGate() {
-      document.getElementById('noiseGateThreshold').value = DEFAULT_NOISE_GATE_THRESHOLD;
-      document.getElementById('noiseGateSlider').value = DEFAULT_NOISE_GATE_THRESHOLD;
-      document.getElementById('noiseGateCheckbox').checked = DEFAULT_NOISE_GATE_ENABLED;
-      updateNoiseGate();
+    // Function to reset temperature to default
+    function resetTemperature() {
+      updateTemperature(DEFAULT_TEMPERATURE);
+    }
+
+    // Function to update top_p
+    function updateTopP(value) {
+      topP = parseFloat(value) || DEFAULT_TOP_P;
+
+      // Sync slider and input if they don't match
+      document.getElementById('topPInput').value = topP;
+      document.getElementById('topPSlider').value = topP;
+    }
+
+    // Function to reset top_p to default
+    function resetTopP() {
+      updateTopP(DEFAULT_TOP_P);
+    }
+
+    // Function to update repetition penalty
+    function updateRepPenalty(value) {
+      repPenalty = parseFloat(value) || DEFAULT_REP_PENALTY;
+
+      // Sync slider and input if they don't match
+      document.getElementById('repPenaltyInput').value = repPenalty;
+      document.getElementById('repPenaltySlider').value = repPenalty;
+    }
+
+    // Function to reset repetition penalty to default
+    function resetRepPenalty() {
+      updateRepPenalty(DEFAULT_REP_PENALTY);
+    }
+
+    // Function to update max tokens
+    function updateMaxTokens(value) {
+      maxTokens = parseInt(value) || DEFAULT_MAX_TOKENS;
+
+      // Sync slider and input if they don't match
+      document.getElementById('maxTokensInput').value = maxTokens;
+      document.getElementById('maxTokensSlider').value = maxTokens;
+    }
+
+    // Function to reset max tokens to default
+    function resetMaxTokens() {
+      updateMaxTokens(DEFAULT_MAX_TOKENS);
     }
 
     // Initialize with default values
     function initializeSettings() {
       updateBufferSize(DEFAULT_BUFFER_SIZE_KB);
 
-      // Set initial noise gate values
-      document.getElementById('noiseGateThreshold').value = DEFAULT_NOISE_GATE_THRESHOLD;
-      document.getElementById('noiseGateSlider').value = DEFAULT_NOISE_GATE_THRESHOLD;
-      document.getElementById('noiseGateCheckbox').checked = DEFAULT_NOISE_GATE_ENABLED;
+      // Set initial generation parameter values
+      updateTemperature(DEFAULT_TEMPERATURE);
+      updateTopP(DEFAULT_TOP_P);
+      updateRepPenalty(DEFAULT_REP_PENALTY);
+      updateMaxTokens(DEFAULT_MAX_TOKENS);
     }
 
     // Call initialization on page load
@@ -477,6 +560,9 @@
           throw new Error('Please enter some text');
         }
 
+        // Get the selected voice
+        const voice = document.getElementById('voiceSelect').value;
+
         // Initialize player if not already done
         if (!player) {
           player = setupPlayer();
@@ -488,8 +574,17 @@
         // Record start time when button is clicked
         const startTime = performance.now();
 
-        // Create event source for streaming
-        const eventSource = new EventSource(`http://localhost:8000/stream-audio?text=${encodeURIComponent(text)}`);
+        // Create event source for streaming with all parameters
+        const params = new URLSearchParams({
+          text: text,
+          voice: voice,
+          temperature: temperature,
+          top_p: topP,
+          repetition_penalty: repPenalty,
+          max_tokens: maxTokens
+        });
+
+        const eventSource = new EventSource(`http://localhost:8000/stream-audio?${params.toString()}`);
 
         // Buffer settings
         const initialBuffer = [];

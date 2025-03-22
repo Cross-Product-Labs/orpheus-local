@@ -17,12 +17,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-async def token_to_audio_stream(text: str) -> AsyncGenerator[bytes, None]:
+async def token_to_audio_stream(
+    text: str,
+    voice: str = "tara",
+    temperature: float = 0.6,
+    top_p: float = 0.9,
+    repetition_penalty: float = 1.1,
+    max_tokens: int = 1200
+) -> AsyncGenerator[bytes, None]:
     buffer = []
     count = 0
 
-    # Get the token generator
-    token_gen = gguf_orpheus.generate_tokens_from_api(text)
+    # Get the token generator with all parameters
+    token_gen = gguf_orpheus.generate_tokens_from_api(
+        prompt=text,
+        voice=voice,
+        temperature=temperature,
+        top_p=top_p,
+        repetition_penalty=repetition_penalty,
+        max_tokens=max_tokens
+    )
 
     for token_text in token_gen:
         token = gguf_orpheus.turn_token_into_id(token_text, count)
@@ -40,14 +54,28 @@ async def token_to_audio_stream(text: str) -> AsyncGenerator[bytes, None]:
                     await asyncio.sleep(0.08)  # 1/12 ≈ 0.083 seconds
 
 @app.get("/stream-audio")
-async def stream_audio(text: str = "Hello, this is a test of the Orpheus text to speech model."):
+async def stream_audio(
+    text: str = "Hello, this is a test of the Orpheus text to speech model.",
+    voice: str = "tara",
+    temperature: float = 0.6,
+    top_p: float = 0.9,
+    repetition_penalty: float = 1.1,
+    max_tokens: int = 1200
+):
     async def audio_stream():
         # Send audio format information
         yield "event: format\n"
         yield f"data: {json.dumps({'sampleRate': 24000, 'channels': 1, 'bitsPerSample': 16})}\n\n"
 
         # Stream audio chunks as they're generated
-        async for chunk in token_to_audio_stream(text):
+        async for chunk in token_to_audio_stream(
+            text=text,
+            voice=voice,
+            temperature=temperature,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            max_tokens=max_tokens
+        ):
             chunk_b64 = chunk.hex()
             yield "event: audio\n"
             yield f"data: {chunk_b64}\n\n"
