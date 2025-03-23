@@ -141,6 +141,16 @@
     h1 {
       color: #4CAF50;
     }
+
+    .spectrogram {
+      width: 100%;
+      max-width: 500px;
+      height: 200px;
+      background-color: #2a2a2a;
+      border-radius: 4px;
+      margin: 10px auto;
+      display: block;
+    }
   </style>
 </head>
 
@@ -222,6 +232,7 @@
       <div id="audioInfo" class="audio-info"></div>
       <div class="audio-controls">
         <audio id="audioPlayer" controls></audio>
+        <canvas id="spectrogram" class="spectrogram"></canvas>
         <button id="downloadButton" onclick="downloadAudio()">Download Audio</button>
       </div>
     </div>
@@ -446,6 +457,13 @@
     let topP = DEFAULT_TOP_P;
     let repPenalty = DEFAULT_REP_PENALTY;
     let maxTokens = DEFAULT_MAX_TOKENS;
+
+    // Add these variables at the top with other globals
+    let audioContext;
+    let analyser;
+    let spectrogramCanvas;
+    let spectrogramCtx;
+    let isDrawing = false;
 
     // Function to update buffer size
     function updateBufferSize(sizeKB) {
@@ -684,7 +702,99 @@
       }
     }
 
-    // Function to create WAV and set it to the audio element
+    // Add this function before createAndSetAudioElement
+    function setupSpectrogram() {
+      spectrogramCanvas = document.getElementById('spectrogram');
+      spectrogramCtx = spectrogramCanvas.getContext('2d');
+
+      // Set canvas size
+      spectrogramCanvas.width = spectrogramCanvas.offsetWidth || 500;
+      spectrogramCanvas.height = spectrogramCanvas.offsetHeight || 200;
+
+      // Clear canvas initially
+      spectrogramCtx.fillStyle = '#2a2a2a';
+      spectrogramCtx.fillRect(0, 0, spectrogramCanvas.width, spectrogramCanvas.height);
+
+      // Wait for audio to be loaded
+      audioPlayer.addEventListener('loadedmetadata', function () {
+        try {
+          // Fetch the audio data
+          fetch(audioPlayer.src)
+            .then(response => response.arrayBuffer())
+            .then(arrayBuffer => {
+              // Convert audio data to PCM samples
+              const pcmData = new Int16Array(arrayBuffer.slice(44)); // Skip WAV header
+
+              // Calculate how many samples to combine for each pixel
+              const samplesPerPixel = Math.ceil(pcmData.length / spectrogramCanvas.width);
+
+              // Draw waveform
+              spectrogramCtx.strokeStyle = '#4CAF50';
+              spectrogramCtx.lineWidth = 1;
+              spectrogramCtx.beginPath();
+
+              for (let x = 0; x < spectrogramCanvas.width; x++) {
+                // Get min and max values for this pixel's sample range
+                const startSample = x * samplesPerPixel;
+                const endSample = Math.min(startSample + samplesPerPixel, pcmData.length);
+
+                let min = 32767;
+                let max = -32768;
+
+                for (let i = startSample; i < endSample; i++) {
+                  const sample = pcmData[i];
+                  min = Math.min(min, sample);
+                  max = Math.max(max, sample);
+                }
+
+                // Convert to canvas coordinates
+                const minY = ((min / 32768) + 1) / 2 * spectrogramCanvas.height;
+                const maxY = ((max / 32768) + 1) / 2 * spectrogramCanvas.height;
+
+                // Draw vertical line from min to max
+                spectrogramCtx.moveTo(x + 0.5, minY);
+                spectrogramCtx.lineTo(x + 0.5, maxY);
+              }
+
+              spectrogramCtx.stroke();
+
+              // Draw chunk boundaries
+              let currentSample = 0;
+              spectrogramCtx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+              spectrogramCtx.lineWidth = 1;
+
+              audioChunks.forEach((chunk, index) => {
+                // Calculate x position for this chunk boundary
+                const chunkSamples = chunk.length / 2; // 2 bytes per sample
+                currentSample += chunkSamples;
+                const x = (currentSample / pcmData.length) * spectrogramCanvas.width;
+
+                // Draw vertical line for chunk boundary
+                spectrogramCtx.beginPath();
+                spectrogramCtx.moveTo(x, 0);
+                spectrogramCtx.lineTo(x, spectrogramCanvas.height);
+                spectrogramCtx.stroke();
+              });
+
+              // Draw legend
+              spectrogramCtx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+              spectrogramCtx.font = '12px Arial';
+              spectrogramCtx.textAlign = 'right';
+              spectrogramCtx.textBaseline = 'bottom';
+              spectrogramCtx.fillText(`Total chunks: ${audioChunks.length}`, spectrogramCanvas.width - 5, spectrogramCanvas.height - 5);
+
+            })
+            .catch(error => {
+              console.error('Error creating waveform:', error);
+            });
+
+        } catch (error) {
+          console.error('Error setting up waveform:', error);
+        }
+      }, { once: true }); // Only run once
+    }
+
+    // Modify createAndSetAudioElement to call setupSpectrogram
     function createAndSetAudioElement() {
       if (audioChunks.length === 0) {
         return;
@@ -716,6 +826,9 @@
 
       // Set the audio element source
       audioPlayer.src = url;
+
+      // Setup spectrogram after setting the source
+      setupSpectrogram();
 
       // Clean up the URL when the page is unloaded
       window.addEventListener('unload', () => {
