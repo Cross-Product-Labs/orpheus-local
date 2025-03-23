@@ -65,34 +65,43 @@ def generate_tokens_from_api(prompt, voice=DEFAULT_VOICE, temperature=TEMPERATUR
         "stream": True
     }
 
-    # Make the API request with streaming
-    response = requests.post(API_URL, headers=HEADERS, json=payload, stream=True)
+    # Use a session for connection pooling
+    with requests.Session() as session:
+        # Set a shorter timeout for the initial connection
+        response = session.post(API_URL, headers=HEADERS, json=payload, stream=True, timeout=(2.0, 30.0))
 
-    if response.status_code != 200:
-        print(f"Error: API request failed with status code {response.status_code}")
-        print(f"Error details: {response.text}")
-        return
+        if response.status_code != 200:
+            print(f"Error: API request failed with status code {response.status_code}")
+            print(f"Error details: {response.text}")
+            return
 
-    # Process the streamed response
-    token_counter = 0
-    for line in response.iter_lines():
-        if line:
-            line = line.decode('utf-8')
-            if line.startswith('data: '):
-                data_str = line[6:]  # Remove the 'data: ' prefix
-                if data_str.strip() == '[DONE]':
-                    break
+        # Process the streamed response
+        token_counter = 0
+        buffer = ""
 
-                try:
-                    data = json.loads(data_str)
-                    if 'choices' in data and len(data['choices']) > 0:
-                        token_text = data['choices'][0].get('text', '')
-                        token_counter += 1
-                        if token_text:
-                            yield token_text
-                except json.JSONDecodeError as e:
-                    print(f"Error decoding JSON: {e}")
-                    continue
+        for chunk in response.iter_content(chunk_size=1024):
+            if not chunk:
+                continue
+
+            buffer += chunk.decode('utf-8')
+            lines = buffer.split('\n')
+            buffer = lines.pop()  # Keep the last incomplete line in the buffer
+
+            for line in lines:
+                if line.startswith('data: '):
+                    data_str = line[6:]  # Remove the 'data: ' prefix
+                    if data_str.strip() == '[DONE]':
+                        return
+
+                    try:
+                        data = json.loads(data_str)
+                        if 'choices' in data and len(data['choices']) > 0:
+                            token_text = data['choices'][0].get('text', '')
+                            token_counter += 1
+                            if token_text:
+                                yield token_text
+                    except json.JSONDecodeError:
+                        continue
 
     print("Token generation complete")
 
@@ -148,6 +157,7 @@ def tokens_decoder_sync(syn_token_gen, output_file=None):
     """Synchronous wrapper for the asynchronous token decoder."""
     audio_queue = queue.Queue()
     audio_segments = []
+    first_chunk_event = threading.Event()  # Add event for first chunk
 
     # If output_file is provided, prepare WAV file
     wav_file = None
@@ -165,8 +175,15 @@ def tokens_decoder_sync(syn_token_gen, output_file=None):
             yield token
 
     async def async_producer():
+        first_chunk_produced = False
         async for audio_chunk in tokens_decoder(async_token_gen()):
             audio_queue.put(audio_chunk)
+
+            # Signal when first chunk is available
+            if not first_chunk_produced:
+                first_chunk_produced = True
+                first_chunk_event.set()
+
         audio_queue.put(None)  # Sentinel to indicate completion
 
     def run_async():
@@ -174,25 +191,37 @@ def tokens_decoder_sync(syn_token_gen, output_file=None):
 
     # Start the async producer in a separate thread
     thread = threading.Thread(target=run_async)
+    thread.daemon = True  # Make thread daemon so it exits when main thread exits
     thread.start()
+
+    # Wait for first chunk with timeout
+    first_chunk_event.wait(timeout=2.0)  # 2 second timeout for first chunk
 
     # Process audio as it becomes available
     while True:
-        audio = audio_queue.get()
-        if audio is None:
-            break
+        try:
+            # Use a shorter timeout for more responsive handling
+            audio = audio_queue.get(timeout=0.5)
+            if audio is None:
+                break
 
-        audio_segments.append(audio)
+            audio_segments.append(audio)
 
-        # Write to WAV file if provided
-        if wav_file:
-            wav_file.writeframes(audio)
+            # Write to WAV file if provided
+            if wav_file:
+                wav_file.writeframes(audio)
+
+        except queue.Empty:
+            # Check if thread is still alive
+            if not thread.is_alive():
+                break
+            continue
 
     # Close WAV file if opened
     if wav_file:
         wav_file.close()
 
-    thread.join()
+    thread.join(timeout=1.0)  # Join with timeout
 
     # Calculate and print duration
     duration = sum([len(segment) // (2 * 1) for segment in audio_segments]) / SAMPLE_RATE

@@ -433,8 +433,8 @@
     let audioChunks = []; // Store all audio chunks
     let audioDuration = 0; // Track audio duration
 
-    // Default buffer size in KB
-    const DEFAULT_BUFFER_SIZE_KB = 8;
+    // Default buffer size in KB - reduce for lower latency
+    const DEFAULT_BUFFER_SIZE_KB = 4;  // Changed from 8 to 4
     // Calculate buffer size in bytes (KB * 1024)
     let bufferSizeKB = DEFAULT_BUFFER_SIZE_KB;
     let MIN_BUFFER_BYTES = bufferSizeKB * 1024;
@@ -643,8 +643,12 @@
             totalBufferedBytes += chunk.length;
             statusDiv.textContent = `Buffering audio... (${Math.round(totalBufferedBytes / 1024)} KB)`;
 
-            // Start playback when we have enough data
-            if (totalBufferedBytes >= MIN_BUFFER_BYTES) {
+            // Start playback when we have enough data or after a timeout
+            const bufferTimeoutMs = 1000; // 1 second max wait
+            const hasEnoughData = totalBufferedBytes >= MIN_BUFFER_BYTES;
+            const hasWaitedTooLong = performance.now() - startTime > bufferTimeoutMs;
+
+            if (hasEnoughData || (hasWaitedTooLong && totalBufferedBytes > 0)) {
               isBuffering = false;
               startPlayTime = performance.now();
               const totalLatency = (startPlayTime - startTime).toFixed(0);
