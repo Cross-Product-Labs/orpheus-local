@@ -224,6 +224,13 @@ let spectrogramCanvas;
 let spectrogramCtx;
 let isDrawing = false;
 
+// Add these variables to track average latencies
+let totalGenerations = 0;
+let totalFirstChunkLatency = 0;
+let totalPlaybackStartLatency = 0;
+let averageFirstChunkLatency = 0;
+let averagePlaybackStartLatency = 0;
+
 // Function to update buffer size
 function updateBufferSize(sizeKB) {
   bufferSizeKB = parseInt(sizeKB) || DEFAULT_BUFFER_SIZE_KB;
@@ -379,10 +386,18 @@ async function handlePlay() {
     eventSource.addEventListener('audio', async (e) => {
       // Calculate latency on first chunk
       if (!firstChunkReceived) {
-        const latency = (performance.now() - startTime).toFixed(0);
-        console.log(`First audio chunk received after ${latency}ms`);
-        statusDiv.textContent = `First chunk received after ${latency}ms`;
+        const firstChunkLatency = performance.now() - startTime;
+        console.log(`First audio chunk received after ${firstChunkLatency.toFixed(0)}ms`);
+        statusDiv.textContent = `First chunk received after ${firstChunkLatency.toFixed(0)}ms`;
         firstChunkReceived = true;
+
+        // Update first chunk latency averages
+        totalFirstChunkLatency += firstChunkLatency;
+        totalGenerations++;
+        averageFirstChunkLatency = totalFirstChunkLatency / totalGenerations;
+
+        // Store firstChunkLatency in a variable accessible throughout the function
+        this.firstChunkLatency = firstChunkLatency;
       }
 
       // Make sure e.data exists and is a string before trying to match
@@ -414,9 +429,17 @@ async function handlePlay() {
             if (hasEnoughData || (hasWaitedTooLong && totalBufferedBytes > 0)) {
               isBuffering = false;
               startPlayTime = performance.now();
-              const totalLatency = (startPlayTime - startTime).toFixed(0);
-              statusDiv.textContent = 'Playing audio...';
-              timingInfoDiv.textContent = `First chunk: ${(firstChunkReceived ? performance.now() - startTime : 'N/A').toFixed(0)}ms, Playback start: ${totalLatency}ms`;
+              const playbackStartLatency = startPlayTime - startTime;
+
+              // Update playback start latency averages
+              totalPlaybackStartLatency += playbackStartLatency;
+              averagePlaybackStartLatency = totalPlaybackStartLatency / totalGenerations;
+
+              statusDiv.innerHTML = 'Playing audio...';
+              // Display current generation metrics on one line
+              timingInfoDiv.innerHTML = `First chunk: ${this.firstChunkLatency ? this.firstChunkLatency.toFixed(0) : 'N/A'}ms | Playback start: ${playbackStartLatency.toFixed(0)}ms`;
+              // Display average metrics on a separate line
+              timingInfoDiv.innerHTML += `<br>Average (${totalGenerations} generations): First chunk: ${averageFirstChunkLatency.toFixed(0)}ms | Playback start: ${averagePlaybackStartLatency.toFixed(0)}ms`;
 
               // Feed the initial buffer to the player
               for (const bufferedChunk of initialBuffer) {
@@ -453,7 +476,7 @@ async function handlePlay() {
         statusDiv.textContent = 'Playback finished';
 
         // Show audio info and controls
-        audioInfo.textContent = `Audio duration: ${audioDuration.toFixed(2)}s, Playback time: ${playbackTime}s`;
+        audioInfo.textContent = `Audio duration: ${audioDuration.toFixed(2)}s | Playback time: ${playbackTime}s`;
 
         // Create WAV file from the audio chunks
         createAndSetAudioElement();
