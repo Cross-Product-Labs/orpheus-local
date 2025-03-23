@@ -1,4 +1,3 @@
-
 // AudioWorklet PCM Player implementation
 class AudioWorkletPCMPlayer {
   constructor(options = {}) {
@@ -386,48 +385,58 @@ async function handlePlay() {
         firstChunkReceived = true;
       }
 
-      // Convert hex string back to audio data
-      const chunk = new Uint8Array(e.data.match(/.{1, 2}/g).map(byte => parseInt(byte, 16)));
+      // Make sure e.data exists and is a string before trying to match
+      if (e.data && typeof e.data === 'string') {
+        // Convert hex string back to audio data
+        const matches = e.data.match(/.{1,2}/g);
+        if (matches) {
+          const chunk = new Uint8Array(matches.map(byte => parseInt(byte, 16)));
 
-      // Store all chunks for replay
-      audioChunks.push(chunk);
+          // Store all chunks for replay
+          audioChunks.push(chunk);
 
-      // Calculate approximate duration (assuming 24kHz, 16-bit mono)
-      // Each sample is 2 bytes, so bytes/2 gives us sample count
-      // Then divide by sample rate to get seconds
-      audioDuration += chunk.length / 2 / 24000;
+          // Calculate approximate duration (assuming 24kHz, 16-bit mono)
+          // Each sample is 2 bytes, so bytes/2 gives us sample count
+          // Then divide by sample rate to get seconds
+          audioDuration += chunk.length / 2 / 24000;
 
-      // Buffer initial chunks
-      if (isBuffering) {
-        initialBuffer.push(chunk);
-        totalBufferedBytes += chunk.length;
-        statusDiv.textContent = `Buffering audio... (${Math.round(totalBufferedBytes / 1024)} KB)`;
+          // Buffer initial chunks
+          if (isBuffering) {
+            initialBuffer.push(chunk);
+            totalBufferedBytes += chunk.length;
+            statusDiv.textContent = `Buffering audio... (${Math.round(totalBufferedBytes / 1024)} KB)`;
 
-        // Start playback when we have enough data or after a timeout
-        const bufferTimeoutMs = 1000; // 1 second max wait
-        const hasEnoughData = totalBufferedBytes >= MIN_BUFFER_BYTES;
-        const hasWaitedTooLong = performance.now() - startTime > bufferTimeoutMs;
+            // Start playback when we have enough data or after a timeout
+            const bufferTimeoutMs = 1000; // 1 second max wait
+            const hasEnoughData = totalBufferedBytes >= MIN_BUFFER_BYTES;
+            const hasWaitedTooLong = performance.now() - startTime > bufferTimeoutMs;
 
-        if (hasEnoughData || (hasWaitedTooLong && totalBufferedBytes > 0)) {
-          isBuffering = false;
-          startPlayTime = performance.now();
-          const totalLatency = (startPlayTime - startTime).toFixed(0);
-          statusDiv.textContent = 'Playing audio...';
-          timingInfoDiv.textContent = `First chunk: ${(firstChunkReceived ? performance.now() - startTime : 'N/A').toFixed(0)}ms, Playback start: ${totalLatency}ms`;
+            if (hasEnoughData || (hasWaitedTooLong && totalBufferedBytes > 0)) {
+              isBuffering = false;
+              startPlayTime = performance.now();
+              const totalLatency = (startPlayTime - startTime).toFixed(0);
+              statusDiv.textContent = 'Playing audio...';
+              timingInfoDiv.textContent = `First chunk: ${(firstChunkReceived ? performance.now() - startTime : 'N/A').toFixed(0)}ms, Playback start: ${totalLatency}ms`;
 
-          // Feed the initial buffer to the player
-          for (const bufferedChunk of initialBuffer) {
-            if (player) {
-              player.feed(bufferedChunk);
+              // Feed the initial buffer to the player
+              for (const bufferedChunk of initialBuffer) {
+                if (player) {
+                  player.feed(bufferedChunk);
+                }
+              }
             }
+            return;
           }
-        }
-        return;
-      }
 
-      // Feed PCM data to player after buffering phase
-      if (player) {
-        player.feed(chunk);
+          // Feed PCM data to player after buffering phase
+          if (player) {
+            player.feed(chunk);
+          }
+        } else {
+          console.warn('Invalid hex data received:', e.data);
+        }
+      } else {
+        console.warn('Invalid data received from event source');
       }
     });
 
