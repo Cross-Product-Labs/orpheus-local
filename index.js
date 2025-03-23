@@ -193,7 +193,7 @@ let audioChunks = []; // Store all audio chunks
 let audioDuration = 0; // Track audio duration
 
 // Default buffer size in KB - reduce for lower latency
-const DEFAULT_BUFFER_SIZE_KB = 4;  // Changed from 8 to 4
+const DEFAULT_BUFFER_SIZE_KB = 8;  // Changed from 4 to 8
 // Calculate buffer size in bytes (KB * 1024)
 let bufferSizeKB = DEFAULT_BUFFER_SIZE_KB;
 let MIN_BUFFER_BYTES = bufferSizeKB * 1024;
