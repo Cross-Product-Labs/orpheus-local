@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Response
+import torch
+from fastapi import FastAPI, Response, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import gguf_orpheus
@@ -18,6 +19,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add startup event to warm up the model
+@app.on_event("startup")
+async def startup_event():
+    # Import here to avoid circular imports
+    from decoder import model, convert_to_audio, snac_device
+
+    # Warm up the model with a small inference
+    dummy_codes = [
+        torch.zeros((1, 3), dtype=torch.int32, device=snac_device),
+        torch.zeros((1, 6), dtype=torch.int32, device=snac_device),
+        torch.zeros((1, 12), dtype=torch.int32, device=snac_device)
+    ]
+
+    with torch.no_grad():
+        model.decode(dummy_codes)
+
+    print("Model warmed up and ready for inference")
+
 async def token_to_audio_stream(
     text: str,
     voice: str = "tara",
@@ -30,17 +49,19 @@ async def token_to_audio_stream(
     count = 0
     speech_started = False
 
-    # Get the token generator with all parameters
-    token_gen = gguf_orpheus.generate_tokens_from_api(
-        prompt=text,
-        voice=voice,
-        temperature=temperature,
-        top_p=top_p,
-        repetition_penalty=repetition_penalty,
-        max_tokens=max_tokens
-    )
+    # Convert to async generator for better performance
+    async def async_token_gen():
+        for token_text in gguf_orpheus.generate_tokens_from_api(
+            prompt=text,
+            voice=voice,
+            temperature=temperature,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            max_tokens=max_tokens
+        ):
+            yield token_text
 
-    for token_text in token_gen:
+    async for token_text in async_token_gen():
         token = gguf_orpheus.turn_token_into_id(token_text, count)
         if token is not None and token > 0:
             buffer.append(token)
@@ -80,6 +101,16 @@ async def stream_audio(
     repetition_penalty: float = 1.1,
     max_tokens: int = 1200
 ):
+    # Validate parameters early to avoid unnecessary processing
+    if voice not in gguf_orpheus.AVAILABLE_VOICES:
+        voice = gguf_orpheus.DEFAULT_VOICE
+
+    # Constrain parameters to valid ranges
+    temperature = max(0.1, min(1.5, temperature))
+    top_p = max(0.1, min(1.0, top_p))
+    repetition_penalty = max(1.0, min(2.0, repetition_penalty))
+    max_tokens = max(100, min(4096, max_tokens))
+
     async def audio_stream():
         # Send audio format information
         yield "event: format\n"
@@ -94,6 +125,7 @@ async def stream_audio(
             repetition_penalty=repetition_penalty,
             max_tokens=max_tokens
         ):
+            # Use hex encoding which is faster than base64
             chunk_b64 = chunk.hex()
             yield "event: audio\n"
             yield f"data: {chunk_b64}\n\n"

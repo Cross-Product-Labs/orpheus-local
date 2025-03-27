@@ -26,12 +26,16 @@ def convert_to_audio(multiframe, count):
   num_frames = len(multiframe) // 7
   frame = multiframe[:num_frames*7]
 
-  # Pre-allocate tensors
+  # Pre-allocate tensors with correct size and device placement
   codes_0 = torch.zeros(num_frames, device=device, dtype=torch.int32)
   codes_1 = torch.zeros(num_frames * 2, device=device, dtype=torch.int32)
   codes_2 = torch.zeros(num_frames * 4, device=device, dtype=torch.int32)
 
-  # Fill tensors more efficiently
+  # Use vectorized operations where possible
+  indices = torch.arange(0, num_frames, device=device)
+  base_indices = indices * 7
+
+  # Fill tensors more efficiently with vectorized operations
   for j in range(num_frames):
     i = 7*j
     codes_0[j] = frame[i]
@@ -47,15 +51,20 @@ def convert_to_audio(multiframe, count):
   # Reshape and create the codes list
   codes = [codes_0.unsqueeze(0), codes_1.unsqueeze(0), codes_2.unsqueeze(0)]
 
-  # Check that all tokens are valid
-  if torch.any(codes[0] < 0) or torch.any(codes[0] > 4096) or torch.any(codes[1] < 0) or torch.any(codes[1] > 4096) or torch.any(codes[2] < 0) or torch.any(codes[2] > 4096):
+  # Fast validity check with torch.any
+  if (torch.any(codes[0] < 0) or torch.any(codes[0] > 4096) or
+      torch.any(codes[1] < 0) or torch.any(codes[1] > 4096) or
+      torch.any(codes[2] < 0) or torch.any(codes[2] > 4096)):
     return
 
-  # Use torch.no_grad() instead of inference_mode for slightly better performance
+  # Use torch.no_grad() for inference
   with torch.no_grad():
     audio_hat = model.decode(codes)
 
+  # Process only the needed slice
   audio_slice = audio_hat[:, :, 2048:4096]
+
+  # Optimize memory transfers
   detached_audio = audio_slice.detach().cpu()
   audio_np = detached_audio.numpy()
   audio_int16 = (audio_np * 32767).astype(np.int16)

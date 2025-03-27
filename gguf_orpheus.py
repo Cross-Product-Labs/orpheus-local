@@ -10,6 +10,7 @@ import argparse
 import threading
 import queue
 import asyncio
+import functools
 
 # LM Studio API settings
 API_URL = "http://127.0.0.1:1234/v1/completions"
@@ -33,6 +34,8 @@ START_TOKEN_ID = 128259
 END_TOKEN_IDS = [128009, 128260, 128261, 128257]
 CUSTOM_TOKEN_PREFIX = "<custom_token_"
 
+# Add a cache for formatted prompts
+@functools.lru_cache(maxsize=32)
 def format_prompt(prompt, voice=DEFAULT_VOICE):
     """Format prompt for Orpheus model with voice prefix and special tokens."""
     if voice not in AVAILABLE_VOICES:
@@ -52,7 +55,6 @@ def generate_tokens_from_api(prompt, voice=DEFAULT_VOICE, temperature=TEMPERATUR
                             top_p=TOP_P, max_tokens=MAX_TOKENS, repetition_penalty=REPETITION_PENALTY):
     """Generate tokens from text using LM Studio API."""
     formatted_prompt = format_prompt(prompt, voice)
-    print(f"Generating speech for: {formatted_prompt}")
 
     # Create the request payload for the LM Studio API
     payload = {
@@ -65,45 +67,46 @@ def generate_tokens_from_api(prompt, voice=DEFAULT_VOICE, temperature=TEMPERATUR
         "stream": True
     }
 
-    # Use a session for connection pooling
-    with requests.Session() as session:
-        # Set a shorter timeout for the initial connection
-        response = session.post(API_URL, headers=HEADERS, json=payload, stream=True, timeout=(2.0, 30.0))
+    # Use a session for connection pooling with keep-alive
+    session = requests.Session()
 
-        if response.status_code != 200:
-            print(f"Error: API request failed with status code {response.status_code}")
-            print(f"Error details: {response.text}")
-            return
+    # Set a shorter timeout for the initial connection
+    response = session.post(API_URL, headers=HEADERS, json=payload, stream=True, timeout=(2.0, 30.0))
 
-        # Process the streamed response
-        token_counter = 0
-        buffer = ""
+    if response.status_code != 200:
+        print(f"Error: API request failed with status code {response.status_code}")
+        print(f"Error details: {response.text}")
+        return
 
-        for chunk in response.iter_content(chunk_size=1024):
-            if not chunk:
-                continue
+    # Process the streamed response
+    buffer = ""
 
-            buffer += chunk.decode('utf-8')
-            lines = buffer.split('\n')
-            buffer = lines.pop()  # Keep the last incomplete line in the buffer
+    # Use a more efficient buffer processing approach
+    for chunk in response.iter_content(chunk_size=4096):  # Larger chunk size
+        if not chunk:
+            continue
 
-            for line in lines:
-                if line.startswith('data: '):
-                    data_str = line[6:]  # Remove the 'data: ' prefix
-                    if data_str.strip() == '[DONE]':
-                        return
+        buffer += chunk.decode('utf-8')
+        lines = buffer.split('\n')
+        buffer = lines.pop()  # Keep the last incomplete line in the buffer
 
-                    try:
-                        data = json.loads(data_str)
-                        if 'choices' in data and len(data['choices']) > 0:
-                            token_text = data['choices'][0].get('text', '')
-                            token_counter += 1
-                            if token_text:
-                                yield token_text
-                    except json.JSONDecodeError:
-                        continue
+        for line in lines:
+            if line.startswith('data: '):
+                data_str = line[6:]  # Remove the 'data: ' prefix
+                if data_str.strip() == '[DONE]':
+                    session.close()
+                    return
 
-    print("Token generation complete")
+                try:
+                    data = json.loads(data_str)
+                    if 'choices' in data and len(data['choices']) > 0:
+                        token_text = data['choices'][0].get('text', '')
+                        if token_text:
+                            yield token_text
+                except json.JSONDecodeError:
+                    continue
+
+    session.close()
 
 def turn_token_into_id(token_string, index):
     """Convert token string to numeric ID for audio processing."""
