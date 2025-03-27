@@ -5,6 +5,7 @@ import gguf_orpheus
 import json
 import asyncio
 from typing import AsyncGenerator
+import numpy as np
 
 app = FastAPI()
 
@@ -27,6 +28,7 @@ async def token_to_audio_stream(
 ) -> AsyncGenerator[bytes, None]:
     buffer = []
     count = 0
+    speech_started = False
 
     # Get the token generator with all parameters
     token_gen = gguf_orpheus.generate_tokens_from_api(
@@ -44,14 +46,30 @@ async def token_to_audio_stream(
             buffer.append(token)
             count += 1
 
-            # Process audio when we have enough tokens (7 tokens per frame)
-            if count % 7 == 0 and count > 27:
-                buffer_to_proc = buffer[-28:]  # Get last 28 tokens (4 frames worth)
+            # Process audio when we have enough tokens
+            if count >= 21 and count % 7 == 0:
+                # Use a fixed slice length instead of calculating it each time
+                slice_length = 21 if count < 28 else 28
+                buffer_to_proc = buffer[-slice_length:]
+
                 audio_samples = gguf_orpheus.convert_to_audio(buffer_to_proc, count)
                 if audio_samples is not None:
-                    yield audio_samples
-                    # Small delay to maintain ~12 frames per second
-                    await asyncio.sleep(0.08)  # 1/12 ≈ 0.083 seconds
+                    # Ultra-lightweight silence detection
+                    # Only check a few samples from the beginning of the chunk
+                    if not speech_started:
+                        # Check just 10 samples for non-zero values
+                        # This is much faster than numpy operations
+                        check_size = min(20, len(audio_samples) // 2)
+                        for i in range(0, check_size * 2, 2):
+                            # Get the 16-bit sample value (little endian)
+                            sample = int.from_bytes(audio_samples[i:i+2], byteorder='little', signed=True)
+                            if abs(sample) > 500:  # Threshold for 16-bit audio
+                                speech_started = True
+                                break
+
+                    # Only yield if we've found speech
+                    if speech_started:
+                        yield audio_samples
 
 @app.get("/stream-audio")
 async def stream_audio(
